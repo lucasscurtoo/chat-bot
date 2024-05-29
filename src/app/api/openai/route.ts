@@ -1,28 +1,57 @@
-import { OpenAIStream, StreamingTextResponse } from 'ai';
-import OpenAI from 'openai';
+import {
+    Message as VercelChatMessage,
+    StreamingTextResponse,
+    createStreamDataTransformer
+} from 'ai';
+import { ChatOpenAI } from '@langchain/openai';
+import { PromptTemplate } from '@langchain/core/prompts';
+import { HttpResponseOutputParser } from 'langchain/output_parsers';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-})
+export const dynamic = 'force-dynamic'
 
-export async function POST(req: Request, res: Response){
-  const { messages } = await req.json()
+const formatMessage = (message: VercelChatMessage) => {
+    return `${message.role}: ${message.content}`;
+};
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages: [
-      {
-        role: 'system',
-        content: 'Example text.'
-      },
-      ...messages
-    ],
-    stream: true,
-    temperature: 1,
-  })
+const TEMPLATE = `You are a software enginner. You have witty replies to user questions and you tell jokes.
+
+Current conversation:
+{chat_history}
+
+user: {input}
+assistant:`;
 
 
-  const stream = OpenAIStream(response)
+export async function POST(req: Request) {
+    try {
+        const { messages } = await req.json();
 
-  return new StreamingTextResponse(stream)
+        const formattedPreviousMessages = messages.slice(0, -1).map(formatMessage);
+
+        const currentMessageContent = messages.at(-1).content;
+
+        const prompt = PromptTemplate.fromTemplate(TEMPLATE);
+
+        const model = new ChatOpenAI({
+            apiKey: process.env.API_KEY_OPENAI!,
+            model: 'gpt-3.5-turbo',
+            temperature: 0.8,
+            verbose: true,
+        });
+
+        const parser = new HttpResponseOutputParser();
+
+        const chain = prompt.pipe(model.bind({ stop: ["?"] })).pipe(parser);
+
+        const stream = await chain.stream({
+            chat_history: formattedPreviousMessages.join('\n'),
+            input: currentMessageContent,
+        });
+
+        return new StreamingTextResponse(
+            stream.pipeThrough(createStreamDataTransformer()),
+        );
+    } catch (e: any) {
+        return Response.json({ error: e.message }, { status: e.status ?? 500 });
+    }
 }
